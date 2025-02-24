@@ -1,0 +1,1 @@
+Project to index recipes found both online and from the indexes of physical cookbooks. Includes an extenion to save online recipes and a script to identify the names of individual recipes from a picutre taken of the index pages of cookbooks. All recipes stores in Obsidian
