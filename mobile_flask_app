@@ -1,0 +1,204 @@
+from flask import Flask, request, render_template, jsonify, send_file
+import os
+from werkzeug.utils import secure_filename
+import threading
+from pathlib import Path
+import logging
+import time
+import uuid
+import json
+import zipfile
+import io
+
+# Import your existing OCR functionality
+from ocr_script import (
+    initialize_openai_client,
+    extract_text_from_image,
+    parse_extracted_text,
+    format_recipe_as_markdown
+)
+
+app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload size
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg'}
+
+# Ensure upload directory exists
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# Configure logging
+logging.basicConfig(
+    filename="recipe_mobile.log",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s"
+)
+
+# Background job storage
+jobs = {}
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+def process_images_mobile(job_id, image_paths, cookbook_name, enhance_images, api_key):
+    """Process images and generate markdown files for download"""
+    jobs[job_id]['status'] = 'processing'
+    
+    try:
+        # Initialize OpenAI client
+        if not initialize_openai_client(api_key):
+            jobs[job_id]['status'] = 'failed'
+            jobs[job_id]['message'] = 'Failed to initialize OpenAI client'
+            return
+        
+        # Create a zip file in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            
+            # Process each image
+            for i, img_path in enumerate(image_paths):
+                logging.info(f"Processing image {i+1}/{len(image_paths)}: {img_path}")
+                
+                # Extract text from image
+                extracted_text = extract_text_from_image(img_path, enhanced=enhance_images)
+                
+                if not extracted_text:
+                    logging.warning(f"No text extracted from {img_path}. Skipping.")
+                    continue
+                
+                # Parse the extracted text
+                sections = parse_extracted_text(extracted_text)
+                
+                # Create markdown files for each recipe
+                for section, recipes in sections.items():
+                    for recipe_name, page_number in recipes:
+                        if recipe_name:  # Ensure not empty
+                            markdown_content = format_recipe_as_markdown(
+                                recipe_name, 
+                                cookbook_name, 
+                                page_number,
+                                section
+                            )
+                            
+                            # Clean filename
+                            safe_name = recipe_name.replace('/', '-').replace('\\', '-')[:100]
+                            if not safe_name:
+                                safe_name = f"recipe_{i}_{uuid.uuid4().hex[:8]}"
+                            
+                            # Add to zip file
+                            zip_file.writestr(f"{safe_name}.md", markdown_content)
+                
+                # Add delay between API calls to respect rate limits
+                if i < len(image_paths) - 1:
+                    time.sleep(2)  # 2 second delay
+        
+        # Save the zip file
+        zip_buffer.seek(0)
+        zip_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{job_id}_recipes.zip")
+        with open(zip_path, 'wb') as f:
+            f.write(zip_buffer.read())
+        
+        # Update job status
+        jobs[job_id]['status'] = 'completed'
+        jobs[job_id]['message'] = f'Processed {len(image_paths)} images from "{cookbook_name}"'
+        jobs[job_id]['download_path'] = zip_path
+        
+    except Exception as e:
+        logging.error(f"Error in processing: {e}")
+        jobs[job_id]['status'] = 'failed'
+        jobs[job_id]['message'] = str(e)
+    
+    # Clean up uploaded files after processing
+    for path in image_paths:
+        try:
+            os.remove(path)
+        except Exception as e:
+            logging.error(f"Could not remove temporary file {path}: {e}")
+
+@app.route('/')
+def index():
+    return render_template('mobile.html')
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    # Check if API key is provided
+    api_key = request.form.get('api_key', '')
+    if not api_key:
+        return jsonify({"error": "OpenAI API key is required"}), 400
+        
+    # Check if cookbook name is provided
+    cookbook_name = request.form.get('cookbook_name', '')
+    if not cookbook_name:
+        return jsonify({"error": "Cookbook name is required"}), 400
+    
+    # Check if files are included in the request
+    if 'files' not in request.files:
+        return jsonify({"error": "No files provided"}), 400
+    
+    files = request.files.getlist('files')
+    if not files or files[0].filename == '':
+        return jsonify({"error": "No files selected"}), 400
+        
+    # Process valid files
+    uploaded_files = []
+    for file in files:
+        if file and allowed_file(file.filename):
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], f"{uuid.uuid4()}_{filename}")
+            file.save(filepath)
+            uploaded_files.append(Path(filepath))
+    
+    if not uploaded_files:
+        return jsonify({"error": "No valid image files uploaded"}), 400
+    
+    # Enhancement option
+    enhance_images = request.form.get('enhance', 'false').lower() == 'true'
+    
+    # Create a new job
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {
+        'status': 'queued',
+        'message': f'Processing {len(uploaded_files)} images',
+        'created_at': time.time(),
+        'cookbook_name': cookbook_name
+    }
+    
+    # Start background processing
+    thread = threading.Thread(
+        target=process_images_mobile,
+        args=(job_id, uploaded_files, cookbook_name, enhance_images, api_key)
+    )
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({
+        "job_id": job_id,
+        "status": "queued",
+        "message": f"Processing {len(uploaded_files)} images from '{cookbook_name}'"
+    })
+
+@app.route('/status/<job_id>')
+def job_status(job_id):
+    if job_id not in jobs:
+        return jsonify({"error": "Job not found"}), 404
+        
+    return jsonify(jobs[job_id])
+
+@app.route('/download/<job_id>')
+def download_recipes(job_id):
+    if job_id not in jobs:
+        return jsonify({"error": "Job not found"}), 404
+    
+    job = jobs[job_id]
+    if job['status'] != 'completed' or 'download_path' not in job:
+        return jsonify({"error": "No download available for this job"}), 400
+    
+    cookbook_name = job['cookbook_name'].replace(' ', '_')
+    return send_file(
+        job['download_path'],
+        as_attachment=True,
+        download_name=f"{cookbook_name}_recipes.zip"
+    )
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
