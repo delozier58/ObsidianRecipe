@@ -7,8 +7,8 @@
     <script src="popup.js" defer></script>
     <style>
         body { 
-            width: 200px; 
-            padding: 10px; 
+            width: 400px; 
+            padding: 15px; 
             font-family: Arial, sans-serif; 
             text-align: center;
         }
@@ -26,14 +26,77 @@
         button:hover { 
             background: #45a049; 
         }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
         h2 {
-            font-size: 16px;
+            font-size: 18px;
             margin-bottom: 10px;
+        }
+        #preview {
+            max-height: 300px;
+            overflow-y: auto;
+            margin-top: 15px;
+            text-align: left;
+            border: 1px solid #ddd;
+            padding: 10px;
+            border-radius: 5px;
+            background: #f9f9f9;
+            display: none;
+        }
+        #preview h3 {
+            margin-top: 0;
+        }
+        .preview-section {
+            margin-bottom: 15px;
+        }
+        #status {
+            margin-top: 10px;
+            font-style: italic;
+            color: #666;
+        }
+        .flex-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .flex-row button {
+            flex: 1;
+        }
+        .obsidian-note {
+            font-size: 12px;
+            color: #666;
+            margin-top: 15px;
+            font-style: italic;
         }
     </style>
 </head>
 <body>
     <h2>Recipe Saver</h2>
-    <button id="extractRecipe">Save Recipe</button>
+    <button id="extractButton">Extract Recipe</button>
+    
+    <div id="preview">
+        <h3 id="recipeTitle">Recipe Title</h3>
+        <div class="preview-section">
+            <h4>Ingredients</h4>
+            <div id="ingredientsList"></div>
+        </div>
+        <div class="preview-section">
+            <h4>Instructions</h4>
+            <div id="instructionsList"></div>
+        </div>
+    </div>
+    
+    <div class="flex-row" id="actionButtons" style="display: none;">
+        <button id="downloadButton">Save Recipe</button>
+        <button id="copyButton">Copy Markdown</button>
+    </div>
+    
+    <div id="status"></div>
+    
+    <div class="obsidian-note">
+        Files will be saved to your downloads folder. Move to your Obsidian vault manually or set up folder monitoring in Obsidian.
+    </div>
 </body>
 </html>
