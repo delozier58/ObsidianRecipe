@@ -4,11 +4,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "extractRecipe") {
         console.log("[DEBUG] Preparing to download recipe...");
 
-        let blob = new Blob([request.markdown], { type: "text/markdown" });
-        let url = URL.createObjectURL(blob);
-
+        // Using Data URL instead of Blob URL
+        let dataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(request.markdown);
+        
         chrome.downloads.download({
-            url: url,
+            url: dataUrl,
             filename: `${request.filename}.md`,
             conflictAction: "overwrite",
             saveAs: true
